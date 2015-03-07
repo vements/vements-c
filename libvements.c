@@ -2,8 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <jansson.h>
 
-#define URL "https://vements.ngrok.com/"
+#define V_APP 0
+#define URL_BASE "https://vements.ngrok.com"
 
 
 static char _errmsg[1024];
@@ -58,6 +60,8 @@ static const char *get_json(const char *url) {
   }
 
   _buffer_reset();
+
+  printf("get_json: %s\n", url);
 
 
   /* init the curl session */ 
@@ -149,6 +153,7 @@ static int post_json(const char *url, const char *data) {
   _buffer_reset();
 
 
+  
 
   /* initalize custom header list (stating that Expect: 100-continue is not
      wanted */ 
@@ -158,7 +163,7 @@ static int post_json(const char *url, const char *data) {
   /* always cleanup */ 
   curl_easy_cleanup(curl);
 
-  
+  return 0;
 }
 
 /*************************************
@@ -202,51 +207,74 @@ typedef struct {
 } vements_profile;
 
 
-/* temp internal buffer for sprintf */
-static char *url_buf[4096];
-
-vements_profile *vements_profile_alloc() {
+static vements_profile *_vements_profile_alloc() {
   vements_profile *x = malloc(sizeof(vements_profile));
   bzero(x, sizeof(vements_profile));
   return x;
 }
 
-void vements_profile_dealloc(vements_profile *x) {
+void vements_profile_free(vements_profile *x) {
   if(x) {
-    if(x->display_name) dealloc(x->display_name);
-    if(x->external_url) dealloc(x->external_url);
-    if(x->image_url) dealloc(x->image_url);
-    if(x->location) dealloc(x->location);
-
-    /* ,,, etc */
-      
-    dealloc(x);
+    if(x->display_name) free(x->display_name);
+    if(x->external_url) free(x->external_url);
+    if(x->image_url) free(x->image_url);
+    if(x->location) free(x->location);
+    if(x->owner) free(x->owner);
+    if(x->perm_delete) free(x->perm_delete);
+    if(x->perm_read) free(x->perm_read);
+    if(x->perm_update) free(x->perm_update);
+    if(x->profile) free(x->profile);
+    if(x->created) free(x->created);
+    if(x->updated) free(x->updated);
+    free(x);
   }
 }
 
+/* temp internal buffer for sprintf */
+static char url_buf[4096];
+
+static json_t *_tmp;
+#define STRING_VAL(json, key, s) \
+    _tmp = json_object_get(json, key); \
+    if(json_is_string(_tmp)) { \
+        const char *ss = json_string_value(_tmp); \
+        s = (char *) malloc(strlen(ss)); \
+        strcpy(s, ss); \
+    }
+
+
+
 vements_profile *vements_profile_get(const char *name) {
-  sprintf(url_buf, "http://vements.ngrok.com/profile/%s", name);
 
   const char *s_json = NULL;
   json_t *json = NULL;
-  vements_profile *profile = vements_profile_alloc();
+  json_error_t error;
+  vements_profile *profile;
 
-  /* just psuedocode */
-  json = parse_json(get_json(url_buf));
-  if(json == NULL)
-    return;
-  for(int i=0; i < json->n_keys; i++) {
-    if(strcmp(json->keys[i], "display_name") == 0) {
-      strcpy(profile->display_name, json->values[i]);
-    }
-    else if(strcmp(json->keys[i], "external_url") == 0) {
-      strcpy(profile->external_url, json->values[i]);
-    }
-    else if(strcmp(json->keys[i], "image_url") == 0) {
-      strcpy(profile->image_url, json->values[i]);
-    }
+  sprintf(url_buf, "%s/profile/%s", URL_BASE, name);
+  s_json = get_json(url_buf);
+  if(!s_json) {
+    sprintf(_errmsg, "There was an error getting JSON from the server for the profile %s.", name);
+    return NULL;
   }
+
+  json = json_loads(s_json, 0, &error);
+  if(json == NULL || !json_is_object(json)) {
+    sprintf(_errmsg, "Could not parse json response from server.");
+    return NULL;
+  }
+
+  profile = _vements_profile_alloc();
+  STRING_VAL(json, "display_name", profile->display_name);
+  STRING_VAL(json, "external_url", profile->external_url);
+  STRING_VAL(json, "image_url", profile->image_url);
+
+  json_decref(json);
+  return profile;
 }
+
+
+#if V_APP
 
 typedef struct {
   char *root;
@@ -271,9 +299,9 @@ vements_app *vements_app_create(const char *profile,
   const char *s_json = NULL;
   json_t *json = NULL;
 
-  sprintf(url_buffer, "https://vements.ngrok.com/profile/%s/namespace/%s/app/%s",
+  sprintf(url_buf, "https://vements.ngrok.com/profile/%s/namespace/%s/app/%s",
           profile, namespace, appname);
-  s_json = post_json(url_buffer);
+  s_json = post_json(url_buf);
   if(s_json == NULL) {
     sprintf(_errmsg, "Could not create app");
     return NULL;
@@ -286,7 +314,6 @@ vements_app *vements_app_create(const char *profile,
   }
 
   app = vements_app_alloc();
-  /* just psuedocode */
   json = parse_json(get_json(url_buf));
   if(json == NULL)
     return;
@@ -304,19 +331,19 @@ vements_app *vements_app_create(const char *profile,
   return x;
 }
 
-void *vements_app_dealloc(vements_app *x) {
+void *vements_app_free(vements_app *x) {
   if(x) {
-    if(x->root) dealloc(x->root);
-    if(x->namespace) dealloc(x->namespace);
-    if(x->app) dealloc(x->app);
-    if(x->display_name) dealloc(x->display_name);
-    if(x->description) dealloc(x->description);
-    if(x->image_url) dealloc(x->image_url);
-    if(x->external_url) dealloc(x->external_url);      
-    dealloc(x);
+    if(x->root) free(x->root);
+    if(x->namespace) free(x->namespace);
+    if(x->app) free(x->app);
+    if(x->display_name) free(x->display_name);
+    if(x->description) free(x->description);
+    if(x->image_url) free(x->image_url);
+    if(x->external_url) free(x->external_url);      
+    free(x);
   }
 }
-
+#endif
 
 
 /** FILL OUT THE REST OF THE API TYPES HERE **/
@@ -327,21 +354,21 @@ void *vements_app_dealloc(vements_app *x) {
 
 int main() {
 
-  const char *get_url = "https://vements.ngrok.com/profile/alice-appleseed";
   const char *get_ret = NULL;
 
-  const char *put_url = "";
-  const char *put_data = "{ \"hey\": \"you\", \"guys\": 12345 }";
-  int put_err = -1;
+//  const char *put_url = "";
+//  const char *put_data = "{ \"hey\": \"you\", \"guys\": 12345 }";
+//  int put_err = -1;
 
   vements_profile *alice = NULL;
-  vements_app *my_new_app = NULL;
+  /* vements_app *my_new_app = NULL; */
 
   /* called once per app */
   vements_init();
 
   /* fetch a profile */
-  get_ret = get_json(get_url);
+  sprintf(url_buf, "%s/profile/alice-appleseed", URL_BASE);
+  get_ret = get_json(url_buf);
   printf("GET: %s\n", get_ret);
 
   /* put_data = "{ \"hey\": \"you\", \"guys\": 12345 }"; */
@@ -354,18 +381,20 @@ int main() {
   alice = vements_profile_get("alice-appleseed");
   printf("ALICE display_name: %s\n", alice->display_name);
   printf("ALICE external_url: %s\n", alice->external_url);
-  vements_profile_dealloc(alice);
+  vements_profile_free(alice);
 
+#if V_APP
   /* test vements app */
   my_new_app = vements_app_create("my-new-app");
   /* do something with it here? */
-  vements_app_dealloc(my_new_app);
+  vements_app_free(my_new_app);
 
   my_new_app = vements_app_get("my-new-app");
   printf("APP display_name: %s\n", my_new_app->display_name);
   printf("APP root: %s\n", my_new_app->root);
   printf("APP namespace: %s\n", my_new_app->namespace);
-  vements_app_dealloc(my_new_app);
+  vements_app_free(my_new_app);
+#endif
 
   /* called once per app */
   vements_cleanup();
